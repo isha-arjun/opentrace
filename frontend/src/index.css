@@ -1,386 +1,562 @@
-import { useEffect, useMemo, useState } from 'react';
-import { sampleReport } from './sampleReport';
-import { buildJsonReport, buildMarkdownReport, compareReports, filterFindings, sortFindings, severityLabels } from './utils/report';
-import type { ScanReport } from './types';
-
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-
-const emptyState = {
-  target: 'https://example.com',
-  scan_timestamp: new Date().toISOString(),
-  data_source: 'No scan yet',
-  summary: { total: 0, passed: 0, failed: 0, informational: 0, unavailable: 0, unknown: 0 },
-  findings: [],
-  hostname: 'example.com',
-  scope: 'No report has been generated yet.',
-  limitations: 'This workspace does not include a real scan until you submit a target URL.',
-};
-
-const pickSeverityColor = (severity: string) => {
-  switch (severity) {
-    case 'critical':
-      return 'critical';
-    case 'high':
-      return 'high';
-    case 'medium':
-      return 'medium';
-    case 'low':
-      return 'low';
-    case 'info':
-      return 'info';
-    default:
-      return 'unknown';
-  }
-};
-
-function App() {
-  const [target, setTarget] = useState('https://example.com');
-  const [report, setReport] = useState<ScanReport | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [severityFilter, setSeverityFilter] = useState('all');
-  const [categoryFilter, setCategoryFilter] = useState('all');
-  const [demoMode, setDemoMode] = useState(false);
-
-  useEffect(() => {
-    const saved = localStorage.getItem('opentrace:last-report');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as ScanReport;
-        if (parsed?.findings) {
-          setReport(parsed);
-        }
-      } catch {
-        localStorage.removeItem('opentrace:last-report');
-      }
-    }
-  }, []);
-
-  const categories = useMemo(() => {
-    const source = report?.findings ?? [];
-    return Array.from(new Set(source.map((finding) => finding.category)));
-  }, [report]);
-
-  const visibleFindings = useMemo(() => {
-    const source = report?.findings ?? [];
-    const filtered = filterFindings(source, severityFilter, categoryFilter);
-    return sortFindings(filtered, 'desc');
-  }, [categoryFilter, report, severityFilter]);
-
-  const saveReportLocally = (nextReport: ScanReport) => {
-    localStorage.setItem('opentrace:last-report', JSON.stringify(nextReport));
-  };
-
-  const downloadFile = (filename: string, content: string, mimeType: string) => {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleDemoLoad = () => {
-    setDemoMode(true);
-    setError(null);
-    setReport(sampleReport);
-    setExpandedId(sampleReport.findings[0]?.id ?? null);
-    saveReportLocally(sampleReport);
-  };
-
-  const handleScan = async () => {
-    setLoading(true);
-    setError(null);
-    setDemoMode(false);
-
-    try {
-      const response = await fetch(`${apiBaseUrl}/api/scan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target }),
-      });
-
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        const message = payload?.detail || payload?.error || 'The scan could not complete.';
-        throw new Error(message);
-      }
-
-      const payload = (await response.json()) as { report?: ScanReport; error?: string };
-      if (!payload.report) {
-        throw new Error(payload.error || 'No report was returned.');
-      }
-      setReport(payload.report);
-      setExpandedId(payload.report.findings[0]?.id ?? null);
-      saveReportLocally(payload.report);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Scan failed unexpectedly.');
-      setReport(null);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const currentReport = report ?? emptyState;
-  const previousReport = (() => {
-    try {
-      const stored = localStorage.getItem('opentrace:last-report');
-      return stored ? (JSON.parse(stored) as ScanReport) : null;
-    } catch {
-      return null;
-    }
-  })();
-
-  const delta = previousReport && report ? compareReports(report, previousReport) : [];
-
-  return (
-    <div className="page-shell">
-      <header className="topbar">
-        <div className="brand-wrap">
-          <div className="brand-mark">OT</div>
-          <div>
-            <div className="brand-name">OpenTrace</div>
-            <div className="brand-subtitle">Website transparency analyzer</div>
-          </div>
-        </div>
-        <nav className="topnav" aria-label="Main navigation">
-          <a href="#overview">Overview</a>
-          <a href="#scan">Scan</a>
-          <a href="#report">Report</a>
-          <button type="button" className="small-button" onClick={handleDemoLoad}>Load sample report</button>
-        </nav>
-      </header>
-
-      <main className="page-content">
-        <section className="hero" id="overview">
-          <div className="hero-copy">
-            <span className="eyebrow">Evidence-first transparency</span>
-            <h1>OpenTrace</h1>
-            <p>
-              Understand what a site is visibly exposing: headers, privacy signals, transparency gaps, and the evidence behind each conclusion.
-            </p>
-            <div className="cta-row">
-              <a href="#scan" className="primary-button">Scan a target</a>
-              <button type="button" className="secondary-button" onClick={handleDemoLoad}>View demo report</button>
-            </div>
-          </div>
-
-          <div className="mini-report" aria-label="Sample report card">
-            <div className="mini-report-header">
-              <span>Example report</span>
-              <span className="demo-tag">Synthetic data</span>
-            </div>
-            <div className="mini-stat-grid">
-              <div>
-                <strong>3</strong>
-                <span>passed</span>
-              </div>
-              <div>
-                <strong>1</strong>
-                <span>failed</span>
-              </div>
-              <div>
-                <strong>1</strong>
-                <span>info</span>
-              </div>
-            </div>
-            <ul className="mini-list">
-              <li>Content-Security-Policy: missing</li>
-              <li>HSTS: configured</li>
-              <li>Referrer-Policy: present</li>
-            </ul>
-          </div>
-        </section>
-
-        <section className="scan-panel" id="scan">
-          <div className="panel-heading">
-            <div>
-              <span className="eyebrow">Target scan</span>
-              <h2>Check a public website</h2>
-            </div>
-            {demoMode ? <span className="demo-tag">Demo mode</span> : <span className="status-pill">Live URL input</span>}
-          </div>
-
-          <label className="input-label" htmlFor="target-url">Target URL</label>
-          <div className="scan-form">
-            <input
-              id="target-url"
-              type="url"
-              value={target}
-              onChange={(event) => setTarget(event.target.value)}
-              placeholder="https://example.com"
-              aria-label="Target URL"
-            />
-            <button type="button" onClick={handleScan} disabled={loading} className="primary-button" aria-live="polite">
-              {loading ? 'Scanning…' : 'Scan target'}
-            </button>
-          </div>
-
-          <div className="helper-row">
-            <span>Examples: https://example.com, https://www.mozilla.org</span>
-          </div>
-
-          {error ? <div className="alert error">{error}</div> : null}
-
-          {loading ? (
-            <div className="loading-block" aria-live="polite">
-              <div className="loading-skeleton heading" />
-              <div className="loading-skeleton line" />
-              <div className="loading-skeleton line short" />
-            </div>
-          ) : null}
-        </section>
-
-        <section className="report-panel" id="report">
-          <div className="report-header">
-            <div>
-              <span className="eyebrow">Transparency report</span>
-              <h2>{demoMode ? 'Synthetic example report' : currentReport.hostname}</h2>
-            </div>
-            <div className="report-actions">
-              <button type="button" className="secondary-button" onClick={() => downloadFile('opentrace-report.json', buildJsonReport(currentReport), 'application/json')}>
-                Export JSON
-              </button>
-              <button type="button" className="secondary-button" onClick={() => downloadFile('opentrace-report.md', buildMarkdownReport(currentReport), 'text/markdown')}>
-                Export Markdown
-              </button>
-              <button type="button" className="secondary-button" onClick={() => window.print()}>
-                Print/PDF
-              </button>
-            </div>
-          </div>
-
-          <div className="summary-grid">
-            <article className="summary-card">
-              <span>Target</span>
-              <strong>{currentReport.target}</strong>
-            </article>
-            <article className="summary-card">
-              <span>Timestamp</span>
-              <strong>{new Date(currentReport.scan_timestamp).toLocaleString()}</strong>
-            </article>
-            <article className="summary-card">
-              <span>Data source</span>
-              <strong>{currentReport.data_source}</strong>
-            </article>
-            <article className="summary-card">
-              <span>Findings</span>
-              <strong>{currentReport.summary.total}</strong>
-            </article>
-          </div>
-
-          <div className="finding-toolbar">
-            <label>
-              Severity
-              <select value={severityFilter} onChange={(event) => setSeverityFilter(event.target.value)}>
-                <option value="all">All severities</option>
-                <option value="critical">Critical</option>
-                <option value="high">High</option>
-                <option value="medium">Medium</option>
-                <option value="low">Low</option>
-                <option value="info">Informational</option>
-                <option value="unknown">Unknown</option>
-              </select>
-            </label>
-            <label>
-              Category
-              <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
-                <option value="all">All categories</option>
-                {categories.map((category) => (
-                  <option key={category} value={category}>{category}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          {visibleFindings.length === 0 ? (
-            <div className="empty-state">
-              <h3>No findings match the current filters.</h3>
-              <p>Try a different severity or category, or submit a new scan target.</p>
-            </div>
-          ) : (
-            <div className="findings-shell">
-              <div className="findings-list">
-                {visibleFindings.map((finding) => (
-                  <article className="finding-card" key={finding.id}>
-                    <button className="finding-button" type="button" onClick={() => setExpandedId(expandedId === finding.id ? null : finding.id)}>
-                      <div className="finding-topline">
-                        <span className={`badge ${pickSeverityColor(finding.severity)}`}>{severityLabels[finding.severity] ?? finding.severity}</span>
-                        <span className="finding-category">{finding.category}</span>
-                      </div>
-                      <h3>{finding.title}</h3>
-                      <p>{finding.observed_value ?? 'No direct observation provided.'}</p>
-                    </button>
-
-                    {expandedId === finding.id ? (
-                      <div className="finding-detail">
-                        <div className="detail-grid">
-                          <div>
-                            <h4>Evidence</h4>
-                            <ul>
-                              {finding.evidence.map((item) => (
-                                <li key={`${finding.id}-${item.check_id}`}>
-                                  <strong>{item.check_id}</strong>: {item.observed_value ?? 'No value'}
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                          <div>
-                            <h4>Interpretation</h4>
-                            <p>{finding.explanation}</p>
-                          </div>
-                        </div>
-                        <div className="detail-grid">
-                          <div>
-                            <h4>Why it matters</h4>
-                            <p>{finding.explanation}</p>
-                          </div>
-                          <div>
-                            <h4>Remediation</h4>
-                            <p>{finding.remediation}</p>
-                          </div>
-                        </div>
-                        <div className="detail-grid">
-                          <div>
-                            <h4>Confidence</h4>
-                            <p>{finding.confidence}</p>
-                          </div>
-                          <div>
-                            <h4>Authoritative documentation</h4>
-                            <a href={finding.documentation} target="_blank" rel="noreferrer">Open reference</a>
-                          </div>
-                        </div>
-                      </div>
-                    ) : null}
-                  </article>
-                ))}
-              </div>
-
-              <aside className="report-aside">
-                <h3>Scope and limitations</h3>
-                <p>{currentReport.scope}</p>
-                <p>{currentReport.limitations}</p>
-                {delta.length > 0 ? (
-                  <div>
-                    <h4>Local comparison</h4>
-                    <ul>
-                      {delta.map((item) => (
-                        <li key={item.id}>
-                          {item.title}: {item.previous ?? 'missing'} → {item.current ?? 'missing'}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-              </aside>
-            </div>
-          )}
-        </section>
-      </main>
-    </div>
-  );
+:root {
+  color-scheme: light;
+  --bg: #0b1220;
+  --bg-soft: #101a2b;
+  --panel: rgba(19, 31, 46, 0.9);
+  --panel-strong: #111d2d;
+  --text: #e7edf6;
+  --muted: #97a9c1;
+  --border: rgba(127, 156, 182, 0.24);
+  --accent: #57d4c7;
+  --accent-strong: #3cb5b0;
+  --danger: #f07178;
+  --warning: #f7c46c;
+  --success: #78d7a8;
+  --info: #7ec6ff;
+  --shadow: 0 24px 60px rgba(5, 10, 18, 0.45);
+  --radius: 20px;
 }
 
-export default App;
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, 'Segoe UI', sans-serif;
+  background: linear-gradient(180deg, #07121a 0%, #0b1220 30%, #0d1522 100%);
+  color: var(--text);
+}
+
+a {
+  color: var(--accent);
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.page-shell {
+  min-height: 100vh;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 5vw;
+  background: rgba(8, 14, 22, 0.78);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.brand-mark {
+  width: 2.3rem;
+  height: 2.3rem;
+  border-radius: 0.7rem;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: #03161b;
+  font-weight: 800;
+}
+
+.brand-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.brand-subtitle {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.topnav a {
+  color: var(--text);
+  text-decoration: none;
+  opacity: 0.85;
+}
+
+.page-content {
+  width: min(1180px, calc(100vw - 2rem));
+  margin: 0 auto;
+  padding: 2rem 0 4rem;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 1.3fr 0.9fr;
+  gap: 2rem;
+  align-items: center;
+  padding: 2.5rem 0 2rem;
+}
+
+.hero-copy h1 {
+  font-size: clamp(2.7rem, 6vw, 5rem);
+  line-height: 0.95;
+  margin: 0.4rem 0 0.9rem;
+}
+
+.hero-copy p {
+  font-size: 1.06rem;
+  color: var(--muted);
+  max-width: 44rem;
+  line-height: 1.7;
+}
+
+.eyebrow {
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  margin-top: 1.5rem;
+}
+
+.primary-button,
+.secondary-button,
+.small-button {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0.85rem 1.2rem;
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.primary-button {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: #05161d;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.secondary-button,
+.small-button {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.primary-button:hover,
+.secondary-button:hover,
+.small-button:hover {
+  transform: translateY(-1px);
+}
+
+.mini-report,
+.scan-panel,
+.report-panel,
+.finding-card,
+.summary-card,
+.empty-state {
+  background: rgba(18, 31, 46, 0.8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.mini-report {
+  padding: 1.2rem;
+}
+
+.mini-report-header,
+.panel-heading,
+.report-header,
+.finding-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.demo-tag,
+.status-pill,
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.demo-tag, .status-pill {
+  background: rgba(87, 212, 199, 0.12);
+  border: 1px solid rgba(87, 212, 199, 0.3);
+  color: var(--accent);
+}
+
+.mini-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.8rem;
+  margin: 1.2rem 0;
+}
+
+.mini-stat-grid div {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.mini-stat-grid strong {
+  font-size: 1.6rem;
+}
+
+.mini-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  display: grid;
+  gap: 0.5rem;
+}
+
+.scan-panel,
+.report-panel {
+  padding: 1.4rem;
+  margin-top: 1.5rem;
+}
+
+.panel-heading h2,
+.report-header h2 {
+  margin: 0.35rem 0 0;
+}
+
+.scan-form {
+  display: flex;
+  gap: 0.8rem;
+  margin-top: 1rem;
+}
+
+.scan-form input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0.85rem 1rem;
+  color: var(--text);
+}
+
+.input-label {
+  display: block;
+  margin-top: 1rem;
+  font-weight: 600;
+}
+
+.helper-row {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 0.7rem;
+}
+
+.alert {
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+.alert.error {
+  background: rgba(240, 113, 120, 0.1);
+  border: 1px solid rgba(240, 113, 120, 0.3);
+  color: #ffd3d7;
+}
+
+.loading-block {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 1rem;
+}
+
+.loading-skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.08), rgba(255,255,255,0.18), rgba(255,255,255,0.08));
+  background-size: 200% 100%;
+  animation: shimmer 1.3s infinite linear;
+  border-radius: 12px;
+}
+
+.loading-skeleton.heading {
+  height: 2.1rem;
+  width: 45%;
+}
+
+.loading-skeleton.line {
+  height: 1rem;
+  width: 100%;
+}
+
+.loading-skeleton.line.short {
+  width: 60%;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 1rem;
+  margin-top: 1.3rem;
+}
+
+.summary-card {
+  padding: 1rem;
+}
+
+.summary-card span {
+  display: block;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.summary-card strong {
+  font-size: 1.05rem;
+}
+
+.finding-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 1.15rem;
+}
+
+.finding-toolbar label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  color: var(--muted);
+}
+
+.finding-toolbar select {
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px; 
+  padding: 0.7rem 0.8rem;
+}
+
+.findings-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(220px, 0.7fr);
+  gap: 1rem;
+  margin-top: 1.2rem;
+}
+
+.findings-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.finding-card {
+  overflow: hidden;
+}
+
+.finding-button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 1rem;
+}
+
+.finding-topline {
+  margin-bottom: 0.4rem;
+}
+
+.badge.critical {
+  background: rgba(240, 113, 120, 0.12);
+  border: 1px solid rgba(240, 113, 120, 0.3);
+  color: #ffb6bb;
+}
+
+.badge.high {
+  background: rgba(209, 108, 90, 0.12);
+  border: 1px solid rgba(209, 108, 90, 0.3);
+  color: #ffc2b5;
+}
+
+.badge.medium {
+  background: rgba(247, 196, 108, 0.12);
+  border: 1px solid rgba(247, 196, 108, 0.35);
+  color: #ffe2a3;
+}
+
+.badge.low {
+  background: rgba(120, 215, 168, 0.12);
+  border: 1px solid rgba(120, 215, 168, 0.32);
+  color: #b6f0d0;
+}
+
+.badge.info,
+.badge.unknown {
+  background: rgba(126, 198, 255, 0.12);
+  border: 1px solid rgba(126, 198, 255, 0.28);
+  color: #d5eeff;
+}
+
+.finding-category {
+  color: var(--muted);
+}
+
+.finding-card h3 {
+  margin: 0;
+  font-size: 1.14rem;
+}
+
+.finding-button p {
+  margin: 0.6rem 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.finding-detail {
+  border-top: 1px solid var(--border);
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 0.8rem;
+}
+
+.detail-grid h4 {
+  margin: 0 0 0.5rem;
+}
+
+.detail-grid p,
+.detail-grid li,
+.report-aside p,
+.report-aside li {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.report-aside {
+  background: rgba(9, 17, 25, 0.66);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+
+.empty-state {
+  padding: 1.4rem;
+  margin-top: 1rem;
+}
+
+.empty-state h3 {
+  margin-top: 0;
+}
+
+@media (max-width: 820px) {
+  .hero,
+  .findings-shell,
+  .summary-grid,
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.9rem;
+  }
+
+  .scan-form {
+    flex-direction: column;
+  }
+
+  .report-header,
+  .panel-heading,
+  .finding-topline {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media print {
+  .topbar,
+  .scan-panel,
+  .report-actions,
+  .finding-toolbar,
+  .secondary-button,
+  .primary-button,
+  .small-button,
+  .mini-report {
+    display: none !important;
+  }
+
+  body {
+    background: white;
+    color: #111;
+  }
+
+  .page-content,
+  .report-panel,
+  .summary-card,
+  .finding-card,
+  .report-aside {
+    box-shadow: none;
+    border-color: #d6d6d6;
+    background: white;
+    color: #111;
+  }
+}
